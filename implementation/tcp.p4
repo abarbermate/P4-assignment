@@ -134,6 +134,17 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
 		hdr.ipv4.dstAddr = clientAddr;
 	}
 
+	action compute_tcp_length() {
+		bit<16> tcpLength;
+		bit<16> ipv4HeaderLength = ((bit<16>) hdr.ipv4.ihl) * 4;
+		tcpLength = hdr.ipv4.totalLen - ipv4HeaderLength;
+		meta.tcpLength = ((bit<16>)hdr.tcp.dataOffset) * 4;
+		bit<32> payLoadLen = (bit<32>)(hdr.ipv4.totalLen - (ipv4HeaderLength + meta.tcpLength));
+		hdr.tcp.ackNo = hdr.tcp.ackNo + payLoadLen;
+		hdr.ipv4.hdrChecksum = 0;
+		meta.tcpLength = hdr.ipv4.totalLen - ipv4HeaderLength;
+	}
+
     action reset_flags(){
         hdr.tcp.cwr = 0;
 	    hdr.tcp.ece = 0;
@@ -207,6 +218,8 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
 		if(hdr.ipv4.isValid()) {
 			send_back();
 		}
+
+		compute_tcp_length();
 	}
 }
 /*************************************************************************
@@ -221,8 +234,57 @@ control MyEgress(inout headers hdr, inout metadata meta, inout standard_metadata
  *************   C H E C K S U M    C O M P U T A T I O N   **************
  *************************************************************************/
 control MyComputeChecksum(inout headers hdr, inout metadata meta) {
-	apply {}
+	apply {
+		update_checksum(
+			hdr.ipv4.isValid(),
+			{
+				hdr.ipv4.version,
+				hdr.ipv4.ihl,
+				hdr.ipv4.diffserv,
+				hdr.ipv4.totalLen,
+				hdr.ipv4.identification,
+				hdr.ipv4.flags,
+				hdr.ipv4.fragOffset,
+				hdr.ipv4.ttl,
+				hdr.ipv4.protocol,
+				hdr.ipv4.srcAddr,
+				hdr.ipv4.dstAddr
+			},
+			hdr.ipv4.hdrChecksum,
+			HashAlgorithm.csum16
+		);
+
+		update_checksum_with_payload(
+			hdr.tcp.isValid() && hdr.ipv4.isValid(),
+			{
+				hdr.ipv4.srcAddr,
+				hdr.ipv4.dstAddr,
+				8w0,
+				hdr.ipv4.protocol,
+				meta.tcpLength,
+				hdr.tcp.srcPort,
+				hdr.tcp.dstPort,
+				hdr.tcp.seqNo,
+				hdr.tcp.ackNo,
+				hdr.tcp.dataOffset,
+				hdr.tcp.res,
+				hdr.tcp.cwr,
+				hdr.tcp.ece,
+				hdr.tcp.urg,
+				hdr.tcp.ack,
+				hdr.tcp.psh,
+				hdr.tcp.rst,
+				hdr.tcp.syn,
+				hdr.tcp.fin,
+				hdr.tcp.window,
+				hdr.tcp.urgentPtr
+			},
+			hdr.tcp.checksum,
+			HashAlgorithm.csum16
+		);
+	}
 }
+
 /*************************************************************************
  ***********************  D E P A R S E R  *******************************
  *************************************************************************/
