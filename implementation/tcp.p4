@@ -1,17 +1,9 @@
-/* -*- P4_16 -*-*/ 
 #include <core.p4>
-
 #include <v1model.p4>
 
-const bit < 16 > TYPE_IPV4 = 0x800;
-const bit < 8 > TYPE_TCP = 6;
-#define BLOOM_FILTER_ENTRIES 4096
-#define BLOOM_FILTER_BIT_WIDTH 1
-#define TIMER_COUNT 15
+const bit<16> TYPE_IPV4 = 0x800;
+const bit<8> TYPE_TCP = 6;
 
-/*************************************************************************
- *********************** H E A D E R S  ***********************************
- *************************************************************************/
 typedef bit<48> macAddr_t;
 typedef bit<32> ip4Addr_t;
 
@@ -36,7 +28,6 @@ header ipv4_t {
 	ip4Addr_t dstAddr;
 }
 
-// header based on the protocol
 header tcp_t {
 	bit<16> srcPort;
 	bit<16> dstPort;
@@ -58,7 +49,7 @@ header tcp_t {
 }
 
 struct metadata {
-	bit<16> tcpLength; // this value is computed for each packet for TCP checksum recalculations
+	bit<16> tcpLength;
 }
 
 struct headers {
@@ -67,9 +58,6 @@ struct headers {
 	tcp_t tcp;
 }
 
-/*************************************************************************
- *********************** P A R S E R  ***********************************
- *************************************************************************/
 parser MyParser(packet_in packet, out headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
 	state start {
 		transition parse_ethernet;
@@ -77,6 +65,7 @@ parser MyParser(packet_in packet, out headers hdr, inout metadata meta, inout st
 
 	state parse_ethernet {
 		packet.extract(hdr.ethernet);
+
 		transition select(hdr.ethernet.etherType) {
 			TYPE_IPV4: parse_ipv4;
 			default: accept;
@@ -85,6 +74,7 @@ parser MyParser(packet_in packet, out headers hdr, inout metadata meta, inout st
 
 	state parse_ipv4 {
 		packet.extract(hdr.ipv4);
+
 		transition select(hdr.ipv4.protocol) {
 			TYPE_TCP: tcp;
 			default: accept;
@@ -93,45 +83,47 @@ parser MyParser(packet_in packet, out headers hdr, inout metadata meta, inout st
 
 	state tcp {
 		packet.extract(hdr.tcp);
+
 		transition accept;
 	}
 }
 
-/*************************************************************************
- ************   C H E C K S U M    V E R I F I C A T I O N   *************
- *************************************************************************/
 control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
 	apply {}
 }
 
-/*************************************************************************
- **************  I N G R E S S   P R O C E S S I N G   *******************
- *************************************************************************/
 control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
-	//For packets coming after connection establishment	
 	bit<32> reg_pos_syn;
 	bit<1> reg_val_syn;
 	bit<32> reg_ackno;
 	bit<32> reg_pos_conn;
 	bit<1> reg_val_conn;
 
+	action reset_flags() {
+		hdr.tcp.cwr = 0;
+		hdr.tcp.ece = 0;
+		hdr.tcp.urg = 0;
+		hdr.tcp.ack = 0;
+		hdr.tcp.psh = 0;
+		hdr.tcp.rst = 0;
+		hdr.tcp.syn = 0;
+		hdr.tcp.fin = 0;
+	}
+
 	action drop() {
 		mark_to_drop(standard_metadata);
 	}
 
 	action send_back() {
-		/* Back to the sender */
-		bit<48> tmp;
-		tmp = hdr.ethernet.dstAddr;
+		bit<48> tmpAddr = hdr.ethernet.dstAddr;
 		hdr.ethernet.dstAddr = hdr.ethernet.srcAddr;
-		hdr.ethernet.srcAddr = tmp; /*ahonnan most kuldjuk az lesz az uj src*/
+		hdr.ethernet.srcAddr = tmpAddr;
+
 		standard_metadata.egress_spec = standard_metadata.ingress_port;
 
-		// switch source and destination IP addresses
-		bit<32> clientAddr = hdr.ipv4.srcAddr;
-		bit<32> serverAddr = hdr.ipv4.dstAddr;
-		hdr.ipv4.srcAddr = serverAddr;
-		hdr.ipv4.dstAddr = clientAddr;
+		bit<32> tempAddr = hdr.ipv4.srcAddr;
+		hdr.ipv4.srcAddr = hdr.ipv4.dstAddr;
+		hdr.ipv4.dstAddr = tempAddr;
 	}
 
 	action compute_tcp_length() {
@@ -145,94 +137,69 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
 		meta.tcpLength = hdr.ipv4.totalLen - ipv4HeaderLength;
 	}
 
-    action reset_flags(){
-        hdr.tcp.cwr = 0;
-	    hdr.tcp.ece = 0;
-	    hdr.tcp.urg = 0;
-	    hdr.tcp.ack = 0;
-	    hdr.tcp.psh = 0;
-	    hdr.tcp.rst = 0;
-	    hdr.tcp.syn = 0;
-	    hdr.tcp.fin = 0;
-    }
-
 	action create_ack_response() {
-		/* Back to the sender */
-        reset_flags();
+		reset_flags();
 
 		bit<16> tmp = hdr.tcp.srcPort;
-        hdr.tcp.srcPort = hdr.tcp.dstPort;
+		hdr.tcp.srcPort = hdr.tcp.dstPort;
 		hdr.tcp.dstPort = tmp;
 		
-		//Set the ACL Flag to 1:
-        hdr.tcp.ack = 1;
+		hdr.tcp.ack = 1;
 
-		//Set the seq.no
 		bit<32> seq = hdr.tcp.seqNo;
 		hdr.tcp.seqNo = hdr.tcp.ackNo;
 		hdr.tcp.ackNo = seq;
 	}
 
 	action set_fin() {
-        // Set FIN Flag to 1
 		hdr.tcp.fin = 1;
 		hdr.tcp.ackNo = hdr.tcp.ackNo + 1;
 	}
 
 	action create_syn_ack_response() {
-		//Switch port numbers
-		bit<16> serverPort = hdr.tcp.dstPort;
+		bit<16> tmpPort = hdr.tcp.dstPort;
 
 		hdr.tcp.dstPort = hdr.tcp.srcPort;
-		hdr.tcp.srcPort = serverPort;
+		hdr.tcp.srcPort = tmpPort;
 
-		//Set the TCP Flags:
 		hdr.tcp.syn = 1;
 		hdr.tcp.ack = 1;
-		bit < 32 > seqNo = hdr.tcp.seqNo;
+		bit<32> seqNo = hdr.tcp.seqNo;
 		hdr.tcp.ackNo = hdr.tcp.seqNo + 1;
 
-		//Set the seq.no
 		hdr.tcp.seqNo = seqNo + 100;
 		hdr.tcp.window = hdr.tcp.window + 100;
 	}
 
 	apply {
-		if(hdr.ipv4.isValid() && hdr.tcp.isValid()) {
-			//check if the connection is established to forward, otherwise discard
-            if(hdr.tcp.psh == 1) {
-                create_ack_response();
-            }
-            else if(hdr.tcp.fin == 1) {
-                create_ack_response();
-                set_fin();
-            }
-			else if(hdr.tcp.syn == 1 && hdr.tcp.ack == 0) { 
-               create_syn_ack_response();
+		if (hdr.ipv4.isValid() && hdr.tcp.isValid()) {
+			if (hdr.tcp.psh == 1) {
+				create_ack_response();
 			}
-            else if(hdr.tcp.psh != 1 && hdr.tcp.fin != 1 && hdr.tcp.ack == 1) {
-                return;
-            }
+			else if (hdr.tcp.fin == 1) {
+				create_ack_response();
+				set_fin();
+			}
+			else if (hdr.tcp.syn == 1 && hdr.tcp.ack == 0) { 
+			   create_syn_ack_response();
+			}
+			else if (hdr.tcp.psh != 1 && hdr.tcp.fin != 1 && hdr.tcp.ack == 1) {
+				return;
+			}
 		}
 
-		if(hdr.ipv4.isValid()) {
+		if (hdr.ipv4.isValid()) {
 			send_back();
 		}
 
 		compute_tcp_length();
 	}
 }
-/*************************************************************************
- ****************  E G R E S S   P R O C E S S I N G   *******************
- *************************************************************************/
-control MyEgress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
-	apply {
 
-	}
+control MyEgress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
+	apply {}
 }
-/*************************************************************************
- *************   C H E C K S U M    C O M P U T A T I O N   **************
- *************************************************************************/
+
 control MyComputeChecksum(inout headers hdr, inout metadata meta) {
 	apply {
 		update_checksum(
@@ -285,9 +252,6 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
 	}
 }
 
-/*************************************************************************
- ***********************  D E P A R S E R  *******************************
- *************************************************************************/
 control MyDeparser(packet_out packet, in headers hdr) {
 	apply {
 		packet.emit(hdr.ethernet);
@@ -295,7 +259,12 @@ control MyDeparser(packet_out packet, in headers hdr) {
 		packet.emit(hdr.tcp);
 	}
 }
-/*************************************************************************
- ***********************  S W I T C H  *******************************
- *************************************************************************/
-V1Switch(MyParser(), MyVerifyChecksum(), MyIngress(), MyEgress(), MyComputeChecksum(), MyDeparser()) main;
+
+V1Switch(
+	MyParser(),
+	MyVerifyChecksum(),
+	MyIngress(),
+	MyEgress(),
+	MyComputeChecksum(),
+	MyDeparser()
+) main;
