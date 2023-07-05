@@ -2,6 +2,8 @@
 
 ### Created by: Lilla Novák, Bálint Balázs, Máté Barbér
 
+## Introduction
+
 This repository contains an implementation of a simple TCP endpoint using the P4 language. The endpoint supports the following functionalities:
 
 **Three-way handshake:** The process of establishing a TCP connection consists of three steps, where the server and the client send different flags to each other to establish the connection.
@@ -49,6 +51,8 @@ To run this example, clone the repository in your Mininet BMv2 enviroment, then 
 ```
 make
 ```
+This command compiles the `basic.p4` file and starts the pod-topo in Mininet and configures all switches with the appropriate P4 program + table entries, and
+configures all hosts with the commands listed in pod-topo/topology.json
 
 After the mininet started correctly, run this command:
 
